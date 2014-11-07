@@ -1,0 +1,84 @@
+Primero vemos de que tipo es el fichero...
+
+$ file ctf
+ctf: bzip2 compressed data, block size = 900k
+
+Siendo un bzip2, lo descomprimimos e intentamos de nuevo.
+
+$ mv ctf ctf.bz2
+$ bzip2 -d ctf.bz2
+$ file ctf
+ctf: POSIX tar archive (GNU)
+
+Asi que dentro hay un tar, desempacamos.
+
+$ mv ctf ctf.tar
+$ tar -xf ctf.tar
+
+Vemos que se ha creado un directorio. Miremos que hay dentro:
+
+$ cd ctf
+$ ls ctf
+flag.txt
+
+No puede ser tan facil, verdad?
+
+$ cat flag.txt
+Nothing to see here, moving along...
+
+Y no, no iba a ser tan facil ;)
+
+Miremos con mas detalle...
+
+$ ls -a
+.  ..  flag.txt  .git
+
+Aja! Es un repositorio de Git. Esto tiene mejor pinta. A ver que aparece en el log de cambios...
+
+$ git log
+commit bea99b953bef6cc2f98ab59b10822bc42afe5abc
+Author: Linus Torvalds <torvalds@klaava.Helsinki.Fi>
+Date:   Thu Jul 24 21:16:59 2014 +0200
+
+    Initial commit
+
+Pues no mucho, salvo porque supuestamente el propio Linus Torvalds en persona ha creado este repo. :P
+
+El log no nos ha ayudado mucho, porque hay un solo commit. Pero Git tiene trucos bajo la manga... y si hay algo en el stash?
+
+$ git stash show
+ flag.txt |   25 ++++++++++++++++++++++++-
+ s.py     |    4 ++++
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+Interesante! Recuperemos los cambios...
+
+$ git stash apply
+# On branch master
+# Changes to be committed:
+#   (use "git reset HEAD <file>..." to unstage)
+#
+#	new file:   s.py
+#
+# Changes not staged for commit:
+#   (use "git add <file>..." to update what will be committed)
+#   (use "git checkout -- <file>..." to discard changes in working directory)
+#
+#	modified:   flag.txt
+#
+
+Examinando los ficheros vemos que flag.txt ahora contiene otra cosa completamente distinta, es el mitico correo electronico en el que Torvalds introdujo su sistema operativo en comp.os.minix. Tambien vemos un script en Python, con este contenido:
+
+$ cat s.py
+#!/usr/bin/env python
+from hashlib import sha1
+with open("flag.txt", "rb") as fd:
+    print "NCN" + sha1(fd.read()).hexdigest()
+
+Que simplemente calcula el hash SHA1 de flag.txt. Lo ejecutamos y nos da el flag:
+
+$ ./s.py
+NCN4dd992213ae6b76f27d7340f0dde1222888df4d3
+
+Un reto sencillito, para ir precalentando. :)
+
