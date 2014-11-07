@@ -1,0 +1,17 @@
+Si no se quiere usar la OVA, el deployment requiere:
+
+1) Copiar la carpeta www a donde corresponda.
+2) Modificar php.ini: session.autostart = 1
+3) Copiar las directivas del nginx donde corresponda. Se puede adaptar a apache
+   usando un .htaccess que tengo por ahi, y habilitando el modulo mod_readwrite.
+4) Crear el usuario correspondiente en la base de datos MySQL, sin privilegios
+   (solo precisa ejecutar select, insert y update en las tablas de su base de
+   datos, "phurl").
+5) Cargar la base de datos (phurl.sql.bz2).
+
+La VM ya esta testeada, pero si se quiere montar en un container estaria bien
+testear que la solucion sigue funcionando correctamente (ver solucion.txt), que
+se pueden crear URLs acortadas correctamente y que la cookie PHPSESSID se esta
+generando (esto ultimo es opcional pero recomendable).
+
+Cualquier duda preguntarme :)

